@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sismógrafo — en vivo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --papel: #f3f5f6;
+    --tinta: #16222e;
+    --suave: #5b6b78;
+    --trazo: #0e6b6b;
+    --rejilla: #d3dce0;
+    --alerta: #b5391f;
+    --ok: #2b7a3d;
+    --aviso: #a56a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px clamp(16px, 5vw, 56px) 48px;
+    background: var(--papel); color: var(--tinta);
+    font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+    font-size: 17px; line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+  main { max-width: 1040px; }
+  h1 { font-size: 30px; margin: 0 0 4px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 36px 0 10px; font-weight: 700; }
+  .estado { display: flex; align-items: center; gap: 8px; color: var(--suave); margin: 0 0 24px; }
+  .punto { width: 10px; height: 10px; border-radius: 50%; background: var(--suave); flex: none; }
+  .estado.ok .punto { background: var(--ok); }
+  .estado.aviso .punto { background: var(--aviso); }
+  .estado.mal .punto { background: var(--alerta); }
+
+  .lecturas { display: flex; flex-wrap: wrap; gap: 6px 36px; margin: 0 0 22px; }
+  .lecturas div { min-width: 92px; }
+  .lecturas dt { font-size: 15px; color: var(--suave); }
+  .lecturas dd { margin: 0; font-size: 26px; font-weight: 700; }
+  .lecturas dd small { font-size: 15px; font-weight: 400; color: var(--suave); }
+
+  .rango { display: flex; gap: 6px; margin: 0 0 10px; }
+  .rango button, .acciones button {
+    font: inherit; padding: 6px 14px; border: 1px solid var(--rejilla); background: transparent;
+    color: var(--tinta); border-radius: 6px; cursor: pointer;
+  }
+  .acciones { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+  .rango button[aria-pressed="true"] { background: var(--tinta); color: var(--papel); border-color: var(--tinta); }
+  .rango button:focus-visible, .acciones button:focus-visible { outline: 3px solid var(--trazo); outline-offset: 2px; }
+
+  .papel {
+    position: relative; border: 1px solid var(--rejilla); border-radius: 4px; padding: 10px 10px 4px;
+    background-color: #fbfcfc;
+    background-image:
+      linear-gradient(var(--rejilla) 1px, transparent 1px),
+      linear-gradient(90deg, var(--rejilla) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: -1px -1px;
+  }
+  .papel canvas { display: block; width: 100% !important; }
+  .alto-1 { height: 300px; }
+  .alto-2 { height: 170px; }
+  .nota { color: var(--suave); font-size: 15px; margin: 6px 0 0; max-width: 70ch; }
+
+  table { border-collapse: collapse; width: 100%; max-width: 640px; }
+  th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rejilla); }
+  th { font-weight: 700; color: var(--suave); font-size: 15px; }
+  td.num, th.num { text-align: right; padding-right: 0; }
+  .vacio { color: var(--suave); }
+  @media (prefers-reduced-motion: no-preference) { .punto { transition: background .3s; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sismógrafo</h1>
+  <p class="estado" id="estado" role="status"><span class="punto"></span><span id="estadoTxt">Conectando…</span></p>
+
+  <dl class="lecturas" aria-label="Última lectura">
+    <div><dt>Magnitud</dt><dd id="vMag">–<small> m/s²</small></dd></div>
+    <div><dt>X</dt><dd id="vX">–</dd></div>
+    <div><dt>Y</dt><dd id="vY">–</dd></div>
+    <div><dt>Z</dt><dd id="vZ">–</dd></div>
+    <div><dt>Variación en 5 s</dt><dd id="vVar">–</dd></div>
+    <div><dt>STA/LTA</dt><dd id="vRatio">–</dd></div>
+  </dl>
+
+  <div class="rango" role="group" aria-label="Rango de tiempo">
+    <button data-seg="3600" aria-pressed="true">1 hora</button>
+    <button data-seg="21600" aria-pressed="false">6 horas</button>
+    <button data-seg="86400" aria-pressed="false">24 horas</button>
+  </div>
+
+  <div class="papel alto-1"><canvas id="gMag" aria-label="Magnitud de la aceleración"></canvas></div>
+  <p class="nota">Magnitud de la aceleración en m/s². En reposo ronda 9.81. La línea gruesa es el promedio de cada 5 segundos; las finas son el mínimo y el máximo.</p>
+
+  <div class="acciones">
+    <button id="bCsv">Descargar CSV de este rango</button>
+    <button id="bEv">Descargar eventos (CSV)</button>
+  </div>
+
+  <h2>Detector de eventos</h2>
+  <div class="papel alto-2"><canvas id="gRatio" aria-label="Razón STA/LTA"></canvas></div>
+  <p class="nota">Cuando la razón STA/LTA pasa de 3, el sismógrafo registra un evento.</p>
+
+  <h2>Últimos eventos</h2>
+  <div id="eventos"></div>
+</main>
+
+<script>
+// ================== CONFIGURACION ==================
+// Pega aqui la URL de tu Realtime Database, sin "/" al final.
+const DB = "https://monitor-sismo-esp32-default-rtdb.firebaseio.com";
+const ZONA = "America/Managua";
+const RATIO_EVENTO = 3;
+// ===================================================
+
+const $ = id => document.getElementById(id);
+let rango = 3600;
+let gMag, gRatio;
+let ptsCrudos = [];
+
+async function leer(ruta, consulta = "") {
+  const r = await fetch(`${DB}/${ruta}.json${consulta}`, { cache: "no-store" });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+const fmtHoraCorta = t => new Date(t * 1000).toLocaleTimeString("es-NI",
+  { timeZone: ZONA, hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtDiaHora = t => new Date(t * 1000).toLocaleString("es-NI",
+  { timeZone: ZONA, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtCompleta = t => new Date(t * 1000).toLocaleString("es-NI",
+  { timeZone: ZONA, dateStyle: "medium", timeStyle: "medium", hour12: false });
+
+function hace(seg) {
+  if (seg < 90) return seg + " s";
+  if (seg < 5400) return Math.round(seg / 60) + " min";
+  if (seg < 129600) return Math.round(seg / 3600) + " h";
+  return Math.round(seg / 86400) + " días";
+}
+
+function poner(id, valor, unidad) {
+  $(id).innerHTML = valor + (unidad ? `<small> ${unidad}</small>` : "");
+}
+
+async function actualizarAhora() {
+  const caja = $("estado");
+  try {
+    const d = await leer("ahora");
+    if (!d) throw new Error("vacío");
+
+    const edad = Math.floor(Date.now() / 1000) - Number(d.t);
+    poner("vMag", Number(d.mag).toFixed(3), "m/s²");
+    poner("vX", Number(d.x).toFixed(3));
+    poner("vY", Number(d.y).toFixed(3));
+    poner("vZ", Number(d.z).toFixed(3));
+    poner("vVar", Number(d.var).toFixed(3));
+    poner("vRatio", Number(d.ratio).toFixed(2));
+
+    // VIVO: actualiza la gráfica inmediatamente con /ahora.
+    actualizarGraficaViva(d);
+
+    if (edad < 30) {
+      caja.className = "estado ok";
+      $("estadoTxt").textContent = "En línea · " + fmtCompleta(d.t);
+    } else {
+      caja.className = "estado " + (edad < 300 ? "aviso" : "mal");
+      $("estadoTxt").textContent =
+        "Sin datos nuevos desde hace " + hace(edad) +
+        " (última lectura: " + fmtCompleta(d.t) + ")";
+    }
+
+    return d;
+  } catch (e) {
+    console.error("Ahora:", e);
+    caja.className = "estado mal";
+    $("estadoTxt").textContent =
+      "No se pudo leer Firebase (" + (e.message || e) + ")";
+    return null;
+  }
+}
+
+// Reduce a ~500 puntos conservando mínimos y máximos para no perder picos
+function reducir(pts, max = 500) {
+  if (pts.length <= max) return pts;
+  const k = Math.ceil(pts.length / max), out = [];
+  for (let i = 0; i < pts.length; i += k) {
+    const g = pts.slice(i, i + k);
+    out.push({
+      t: g[0].t,
+      avg: g.reduce((s, p) => s + p.avg, 0) / g.length,
+      min: Math.min(...g.map(p => p.min)),
+      max: Math.max(...g.map(p => p.max)),
+      rt: Math.max(...g.map(p => p.rt))
+    });
+  }
+  return out;
+}
+
+function crearGraficas() {
+  const base = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: "index", intersect: false },
+    elements: { point: { radius: 0 } },
+    scales: { x: { ticks: { maxTicksLimit: 8, maxRotation: 0 }, grid: { display: false } } },
+    plugins: { legend: { labels: { boxWidth: 14, usePointStyle: false } } }
+  };
+  Chart.defaults.font.family = '"Atkinson Hyperlegible", system-ui, sans-serif';
+  Chart.defaults.font.size = 13;
+  Chart.defaults.color = "#5b6b78";
+  gMag = new Chart($("gMag"), {
+    type: "line",
+    data: { labels: [], datasets: [
+      { label: "Máximo", data: [], borderColor: "#7aa9a9", borderWidth: 1 },
+      { label: "Promedio", data: [], borderColor: "#0e6b6b", borderWidth: 2 },
+      { label: "Mínimo", data: [], borderColor: "#7aa9a9", borderWidth: 1 }
+    ] },
+    options: { ...base, scales: { ...base.scales, y: { title: { display: true, text: "m/s²" } } } }
+  });
+  gRatio = new Chart($("gRatio"), {
+    type: "line",
+    data: { labels: [], datasets: [
+      { label: "STA/LTA", data: [], borderColor: "#0e6b6b", borderWidth: 2 },
+      { label: "Umbral", data: [], borderColor: "#b5391f", borderWidth: 1, borderDash: [6, 4] }
+    ] },
+    options: { ...base, scales: { ...base.scales, y: { beginAtZero: true } } }
+  });
+}
+
+
+// ---------- Actualización en vivo ----------
+// /ahora llega cada ~5 s. La usamos para que la gráfica se mueva
+// inmediatamente, sin esperar la reconstrucción del historial.
+let ultimoPuntoVivo = 0;
+
+function actualizarGraficaViva(d) {
+  if (!gMag || !gRatio || !d || !Number.isFinite(Number(d.t))) return;
+
+  const t = Number(d.t);
+  if (t <= ultimoPuntoVivo) return;
+  ultimoPuntoVivo = t;
+
+  const etiqueta = rango > 21600 ? fmtDiaHora : fmtHoraCorta;
+
+  gMag.data.labels.push(etiqueta(t));
+  gMag.data.datasets[0].data.push(Number(d.mag));
+  gMag.data.datasets[1].data.push(Number(d.mag));
+  gMag.data.datasets[2].data.push(Number(d.mag));
+
+  gRatio.data.labels.push(etiqueta(t));
+  gRatio.data.datasets[0].data.push(Number(d.ratio));
+  gRatio.data.datasets[1].data.push(RATIO_EVENTO);
+
+  // Conserva solamente el tramo visible seleccionado.
+  const desde = t - rango;
+  while (gMag.data.labels.length > 0) {
+    const i = gMag.data.labels.length - 1;
+    // Los puntos históricos reconstruidos llevan la misma cantidad de
+    // etiquetas; para la vista viva basta limitar a ~720 puntos.
+    if (gMag.data.labels.length <= 720) break;
+    gMag.data.labels.shift();
+    gMag.data.datasets.forEach(ds => ds.data.shift());
+  }
+  while (gRatio.data.labels.length > 720) {
+    gRatio.data.labels.shift();
+    gRatio.data.datasets.forEach(ds => ds.data.shift());
+  }
+
+  gMag.update("none");
+  gRatio.update("none");
+}
+
+async function actualizarHistorial() {
+  try {
+    const desde = Math.floor(Date.now() / 1000) - rango;
+    const d = await leer("hist", "?orderBy=" + encodeURIComponent('"t"') + "&startAt=" + desde);
+    let pts = d ? (Array.isArray(d) ? d.filter(Boolean) : Object.values(d)) : [];
+    pts.sort((a, b) => a.t - b.t);
+    ptsCrudos = pts;
+    pts = reducir(pts);
+    const etiqueta = rango > 21600 ? fmtDiaHora : fmtHoraCorta;
+    const labels = pts.map(p => etiqueta(p.t));
+    gMag.data.labels = labels;
+    gMag.data.datasets[0].data = pts.map(p => p.max);
+    gMag.data.datasets[1].data = pts.map(p => p.avg);
+    gMag.data.datasets[2].data = pts.map(p => p.min);
+    gMag.update();
+    gRatio.data.labels = labels;
+    gRatio.data.datasets[0].data = pts.map(p => p.rt);
+    gRatio.data.datasets[1].data = pts.map(() => RATIO_EVENTO);
+    gRatio.update();
+
+    if (pts.length) ultimoPuntoVivo = Math.max(ultimoPuntoVivo, pts[pts.length - 1].t);
+  } catch (e) {
+    console.error("Historial:", e);
+    const caja = $("estado");
+    if (!caja.classList.contains("ok")) {
+      $("estadoTxt").textContent = "Firebase: no se pudo cargar el historial (" + (e.message || e) + ")";
+    }
+  }
+}
+
+async function actualizarEventos() {
+  const caja = $("eventos");
+  try {
+    const d = await leer("eventos", "?orderBy=" + encodeURIComponent('"$key"') + "&limitToLast=20");
+    const lista = d ? Object.values(d).reverse() : [];
+    if (!lista.length) { caja.innerHTML = '<p class="vacio">Todavía no hay eventos registrados.</p>'; return; }
+    caja.innerHTML = '<table><thead><tr><th>Inicio</th><th class="num">STA/LTA máx.</th><th class="num">Pico (m/s²)</th></tr></thead><tbody>' +
+      lista.map(e => `<tr><td>${fmtCompleta(e.t)}</td><td class="num">${Number(e.ratio).toFixed(2)}</td><td class="num">${Number(e.pico).toFixed(3)}</td></tr>`).join("") +
+      "</tbody></table>";
+  } catch (e) { caja.innerHTML = '<p class="vacio">No se pudieron cargar los eventos.</p>'; }
+}
+
+document.querySelectorAll(".rango button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".rango button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  rango = Number(b.dataset.seg);
+  ultimoPuntoVivo = 0;
+  actualizarHistorial();
+}));
+
+// ---------- Descarga de CSV ----------
+const fechaCsv = t => new Date(t * 1000).toLocaleString("sv-SE", { timeZone: ZONA });
+const sello = () => fechaCsv(Date.now() / 1000).replace(/\D/g, "").slice(0, 12);
+
+function bajar(nombre, filas) {
+  const blob = new Blob(["\ufeff" + filas.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+$("bCsv").addEventListener("click", () => {
+  if (!ptsCrudos.length) { alert("Todavía no hay datos cargados para este rango."); return; }
+  const filas = ["timestamp_unix,fecha_hora,mag_prom_m_s2,mag_min_m_s2,mag_max_m_s2,sta_lta_max"];
+  ptsCrudos.forEach(p => filas.push([p.t, fechaCsv(p.t), p.avg, p.min, p.max, p.rt].join(",")));
+  bajar("sismografo_resumen_" + sello() + ".csv", filas);
+});
+
+$("bEv").addEventListener("click", async () => {
+  try {
+    const d = await leer("eventos", "?orderBy=" + encodeURIComponent('"$key"') + "&limitToLast=500");
+    const lista = d ? Object.values(d) : [];
+    if (!lista.length) { alert("Todavía no hay eventos registrados."); return; }
+    const filas = ["timestamp_unix,fecha_hora,sta_lta_max,pico_m_s2"];
+    lista.forEach(e => filas.push([e.t, fechaCsv(e.t), e.ratio, e.pico].join(",")));
+    bajar("sismografo_eventos_" + sello() + ".csv", filas);
+  } catch (e) { alert("No se pudieron descargar los eventos."); }
+});
+
+crearGraficas();
+actualizarAhora(); actualizarHistorial(); actualizarEventos();
+setInterval(actualizarAhora, 5000);
+setInterval(() => { actualizarHistorial(); actualizarEventos(); }, 30000);
+</script>
+</body>
+</html>
